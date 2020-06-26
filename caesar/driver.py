@@ -255,7 +255,9 @@ def drive(snapdirs, snapname, snapnums, progen=False, progen_rad = False, skipra
 
             if progen:
                 progen_finder(obj_current, obj_progens,
-                              snap_current, snap_progens)
+                              snap_current.outfile, snap_dir = snap_current.snapdir)
+                progen_finder(obj_progens, obj_current,
+                              snap_progens.outfile, snap_dir = snap_current.snapdir)
                 
             if progen_rad == True:
                 #temporary catch to kill off any sims trying to do progen_Rad with clouds till we fix that
