@@ -1,4 +1,5 @@
 import numpy as np
+from yt.funcs import mylog
 
 class SimulationAttributes(object):
     """A class to hold simulation attributes."""
@@ -32,9 +33,9 @@ class SimulationAttributes(object):
 
         sru = 'kpc'
         if self.cosmological_simulation: sru += 'cm'
-        self.search_radius   = ds.quan(500.0, sru).to(obj.units['length'])
+        self.search_radius   = ds.arr([300,1000,3000], sru).to(obj.units['length'])  # default values
 
-        H0 = self.hubble_constant * 100.0
+        H0 = ds.quan(self.hubble_constant * 100.0 * 3.24077929e-20, '1/s')
         if self.cosmological_simulation:
             Om_0 = ds.cosmology.omega_matter
             Ol_0 = ds.cosmology.omega_lambda
@@ -46,6 +47,9 @@ class SimulationAttributes(object):
             )
             self.Om_z = Om_0 * (1.0 + self.redshift)**3 / self.E_z**2
             H_z       = H0 * self.E_z
+            #Kitayama & Suto 1996 v.469, p.480
+            fomega = Om_0*(1.+self.redshift)**3 / self.E_z**2
+            if fomega >=1.0: mylog.warning('fomega out of bounds! fomega=%g %g %g %g'%(fomega,self.Om_z,self.redshift,Ol_0))
         else:
             H_z = H0
 
@@ -53,22 +57,25 @@ class SimulationAttributes(object):
                 self.Om_z = ds.cosmology.omega_matter
             else:
                 self.Om_z = 0.3
+            fomega = self.Om_z
 
                 
-        self.H_z = ds.quan(H_z * 3.24077929e-20, '1/s')
+        self.H_z = H_z
         self.G   = ds.quan(4.51691362044e-39, 'kpc**3/(Msun * s**2)')  ## kpc^3 / (Msun s^2)
 
         self.critical_density = ds.quan(
-            (3.0 * self.H_z.d**2) / (8.0 * np.pi * self.G.d),
+            (3.0 * H_z**2) / (8.0 * np.pi * self.G.d),
             'Msun / kpc**3'
         )
-        #Kitayama & Suto 1996 v.469, p.480
-        fomega = self.Om_z*(1.+self.redshift)**3 / ( self.Om_z*(1.+self.redshift)**3 + (1.-self.Om_z-Ol_0)*(1.+self.redshift)**2 + Ol_0)
-        virial_density = (177.65287921960845*(1. + 0.4093*(1./fomega - 1.)**0.9052) - 1.)*self.Om_z#18*pi*pi
-        self.Densities = np.array([virial_density*self.critical_density.to('Msun/kpc**3').d,
-                                             200.*self.critical_density.to('Msun/kpc**3').d,
-                                             500.*self.critical_density.to('Msun/kpc**3').d,
-                                             2500.*self.critical_density.to('Msun/kpc**3').d])
+        virial_density = (177.65287921960845*(1. + 0.4093*(1./fomega - 1.)**0.9052) - 1.)*self.Om_z #Kitayama & Suto 1996 v.469, p.480
+        #print(self.critical_density, self.critical_density.to('g/cm**3'),self.H_z.to('1/s'),(3.0 * H0.d**2) / (8.0 * np.pi * self.G.d))
+        # Romeel: Removed virial density, because the FOF with b=0.2*MIS 
+        # only finds contour enclosing ~200, so halos do not have all the particles they
+        # need to compute spherical ~100xrhocrit. 
+        #self.Densities = np.array([virial_density*self.critical_density.to('Msun/kpc**3').d,
+        self.Densities = np.array([ 200.*self.critical_density.to('Msun/kpc**3').d,
+                                    500.*self.critical_density.to('Msun/kpc**3').d,
+                                    2500.*self.critical_density.to('Msun/kpc**3').d])
         self.Densities = ds.arr(self.Densities, 'Msun/kpc**3')
 
 

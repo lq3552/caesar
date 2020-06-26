@@ -1,10 +1,12 @@
 import numpy as np
+
 from caesar.property_manager import DatasetType
 from caesar.particle_list import ParticleListContainer
 from caesar.simulation_attributes import SimulationAttributes
 
 import six
 from yt.funcs import mylog, get_hash
+
 
 class CAESAR(object):
     """Master CAESAR class.
@@ -63,6 +65,7 @@ class CAESAR(object):
         self.nclouds = 0
         self.halos = []
         self.galaxies = []
+        self.group_types = []
         
         self.reset_default_returns()
         
@@ -101,11 +104,6 @@ class CAESAR(object):
         self._ds_type = DatasetType(self._ds)
         self._assign_simulation_attributes()
         
-    def _check_for_yt_dataset(self):
-        """Check to see if a yt_dataset has been assigned, if not 
-        raise an exception."""
-        check = self.yt_dataset
-        
     @property
     def _has_galaxies(self):
         """Checks if any galaxies are present."""
@@ -128,7 +126,6 @@ class CAESAR(object):
         if isinstance(self._dm, int):
             from caesar.data_manager import DataManager
             self._dm = DataManager(self)
-        self._check_for_yt_dataset()
         return self._dm
         
     def _assign_simulation_attributes(self):
@@ -326,29 +323,31 @@ class CAESAR(object):
         >>> obj.member_search(blackholes=False)
 
         """
+        import caesar.assignment as assign
+        import caesar.linking as link
+
         self._args   = args
         self._kwargs = kwargs
 
-        self.data_manager._member_search_init()
-        
-        from caesar.fubar import fubar
-        fubar(self, 'halo')
-        fubar(self, 'galaxy')
-        fubar(self,'cloud')
+        if 'v01_member_search' in self._kwargs and self._kwargs['v01_member_search']:
+            from caesar.fubar import fubar
+            self.data_manager._member_search_init()
+            fubar(self, 'halo')
+            fubar(self, 'galaxy')
+            fubar(self,'cloud')
+        else:
+            from caesar.fubar_halo import fubar_halo
+            fubar_halo(self)
+            assign.assign_galaxies_to_halos(self)
+            assign.assign_clouds_to_galaxies(self)
 
-        
-        import caesar.assignment as assign
-        import caesar.linking as link
-        assign.assign_galaxies_to_halos(self)
         link.link_galaxies_and_halos(self)
-        assign.assign_clouds_to_galaxies(self)
         link.link_clouds_and_galaxies(self)
         assign.assign_central_galaxies(self)
         link.create_sublists(self)
-     
-        
-        import caesar.hydrogen_mass_calc as mass_calc
-        mass_calc.hydrogen_mass_calc(self)
+
+        #import caesar.hydrogen_mass_calc as mass_calc
+        #mass_calc.hydrogen_mass_calc(self)
 
         from caesar.zoom_funcs import all_object_contam_check
         all_object_contam_check(self)

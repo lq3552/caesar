@@ -1,5 +1,11 @@
 import numpy as np
 from yt.funcs import mylog
+import os
+import psutil
+
+def memlog(msg):
+    process = psutil.Process(os.getpid())
+    mylog.info('%s, RAM=%.4g GB'%(msg,process.memory_info()[0]/2.**30))
 
 def rotator(vals, ALPHA=0, BETA=0):
     """Rotate particle set around given angles.
@@ -80,14 +86,23 @@ def calculate_local_densities(obj, group_list):
     
     TREE = PeriodicCKDTree(box, pos)
 
-    search_radius = obj.simulation.search_radius
-    search_volume = 4.0/3.0 * np.pi * search_radius**3
+    if 'search_radius' in obj._kwargs:
+        if isinstance(obj._kwargs['search_radius'],(int,float)):
+            obj.simulation.search_radius = np.array([obj._kwargs['search_radius']])
+        else:
+            obj.simulation.search_radius = np.array(obj._kwargs['search_radius'])
+        obj.simulation.search_radius = obj.yt_dataset.arr(obj.simulation.search_radius, obj.units['length'])
 
     for group in group_list:
-        inrange = TREE.query_ball_point(group.pos, search_radius.d)
-        total_mass = obj.yt_dataset.quan(np.sum(mass[inrange]), obj.units['mass'])
-        group.local_mass_density   = total_mass / search_volume
-        group.local_number_density = float(len(inrange)) / search_volume
+        group.local_mass_density   = {}
+        group.local_number_density = {}
+        for search_radius in obj.simulation.search_radius:
+            search_volume = 4.0/3.0 * np.pi * search_radius**3
+            inrange = TREE.query_ball_point(group.pos, search_radius.d)
+            total_mass = obj.yt_dataset.quan(np.sum(mass[inrange]), obj.units['mass'])
+            rname = str(int(search_radius.d))
+            group.local_mass_density[rname] = total_mass / search_volume
+            group.local_number_density[rname] = float(len(inrange)) / search_volume
 
 
 def info_printer(obj, group_type, top):
@@ -134,10 +149,10 @@ def info_printer(obj, group_type, top):
         for o in group_list:
             cgsm = -1
             if (hasattr(o,'central_galaxy')) & (hasattr(o.central_galaxy,'masses')): cgsm = o.central_galaxy.masses['stellar']
-            output += ' %04d  %0.2e  %0.2e  %0.2e  %0.2e  %0.3f  %0.2e\t|  %0.2e \n' % \
+            output += ' %04d  %0.2e  %0.2e  %0.2e  %0.2e  %0.2e\t|  %0.2e \n' % \
                       (o.GroupID, o.masses['dm'], o.masses['stellar'],
-                       o.masses['gas'],o.radii['total'], o.gas_fraction,
-                       o.local_number_density, cgsm)
+                       o.masses['gas'],o.radii['total_half_mass'],
+                       o.local_number_density['1000'], cgsm)
             cnt += 1
             if cnt > top: break
     elif group_type == 'galaxy':
@@ -147,10 +162,10 @@ def info_printer(obj, group_type, top):
         for o in group_list:
             phm, phid = -1, -1
             if o.halo is not None: phm, phid = o.halo.masses['total'], o.halo.GroupID
-            output += ' %04d  %0.2e  %0.2e  %0.2e  %0.2e  %0.3f  %0.2e  %s\t|  %0.2e  %d \n' % \
+            output += ' %04d  %0.2e  %0.2e  %0.2e  %0.2e  %0.2e  %s\t|  %0.2e  %d \n' % \
                       (o.GroupID, o.masses['stellar'], o.masses['gas'],
-                       o.sfr, o.radii['total'], o.gas_fraction,
-                       o.local_number_density, o.central,
+                       o.sfr, o.radii['total_half_mass'], 
+                       o.local_number_density['1000'], o.central,
                        phm, phid)
             cnt += 1
             if cnt > top: break
@@ -159,12 +174,12 @@ def info_printer(obj, group_type, top):
         output += ' ----------------------------------------------------------------------------------------\n'
         #         ' 0000  4.80e+09  4.80e+09  4.80e+09  7.64e-09  0.000  7.64e-09  False
         for o in group_list:
-            phm, phid = -1, -1
-            output += ' %04d  %0.2e  %0.2e  %0.2e  %0.2e  %0.3f  %0.2e  %s\t|  %0.2e  %d \n' % \
+            halo = o.obj.galaxies[o.parent_galaxy_index].halo
+            output += ' %04d  %0.2e  %0.2e  %0.2e  %0.2e   %0.2e  %s\t|  %0.2e  %d \n' % \
                       (o.GroupID, o.masses['stellar'], o.masses['gas'],
-                       o.sfr, o.radii['total'], o.gas_fraction,
-                       o.local_number_density, o.central,
-                       phm, phid)
+                       o.sfr, o.radii['total_half_mass'],
+                       o.local_number_density['1000'], o.central,
+                       halo.masses['dm'], halo.GroupID)
             cnt += 1
             if cnt > top: break
 

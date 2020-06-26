@@ -1,15 +1,14 @@
 import numpy as np
 import h5py
 from caesar.group import create_new_group, group_types
-from caesar.property_manager import get_property, get_particles_for_FOF, get_high_density_gas_indexes
+from caesar.property_manager import get_property, get_high_density_gas_indexes
 from caesar.property_manager import ptype_ints
 from caesar.utils import calculate_local_densities
-from caesar.fof6d import *
+from caesar.fof6d import run_fof_6d
 
 import six
 from yt.funcs import mylog
 from yt.extern.tqdm import tqdm
-from yt.units.yt_array import uconcatenate, YTArray
 from yt.data_objects.octree_subset import YTPositionArray
 from yt.utilities.lib.contour_finding import ParticleContourTree
 from yt.geometry.selection_routines import AlwaysSelector
@@ -60,9 +59,9 @@ def fof(obj, positions, LL, group_type=None):
     #positions = positions[obj.data_manager.dmlist]
     ##################
     
-    if group_type is not None:
-        mylog.info('Performing 3D FOF on %d positions for %s identification' %
-                   (len(positions), group_type))
+    #if group_type is not None:
+    #    mylog.info('Performing 3D FOF on %d positions for %s identification' %
+    #               (len(positions), group_type))
                                                                              
     pct = ParticleContourTree(LL)
 
@@ -384,13 +383,13 @@ def get_b(obj, group_type):
         if 'b_galaxy' in obj._kwargs and isinstance(obj._kwargs['b_galaxy'], (int, float)):
             b = float(obj._kwargs['b_galaxy'])
         else:
-            b *= 0.2  
+            b *= 0.1  
 
     if group_type == 'cloud':
         if 'b_cloud' in obj._kwargs and isinstance(obj._kwargs['b_cloud'], (int, float)):
             b = float(obj._kwargs['b_cloud'])
         else:
-            b *= 0.2 #BOBBY CONVERSATION: SET UP A CONFIG FILE THAT HAS A DEFAULT SET OF PARAMETERS -- WHETHER WE WANT TO RUN HALOS, GALAXIES ETC.  AND THEN HAVE THE CODE AUTMOATICALLY TURN ON CLOUDS IF WE SET -B_CLOUD linking lengths
+            b *= 0.1 #BOBBY CONVERSATION: SET UP A CONFIG FILE THAT HAS A DEFAULT SET OF PARAMETERS -- WHETHER WE WANT TO RUN HALOS, GALAXIES ETC.  AND THEN HAVE THE CODE AUTMOATICALLY TURN ON CLOUDS IF WE SET -B_CLOUD linking lengths
             
     mylog.info('Using b=%g for %s' % (b, group_types[group_type]))
     return b
@@ -467,25 +466,23 @@ def fubar(obj, group_type, **kwargs):
                     hf.close()
             #assert(obj.simulation.ngas == len(gas_index)) & (obj.simulation.nstar == len(star_index)) & (obj.simulation.nbh == len(bh_index)),'[fubar/fubar]: Assertion failed: Wrong number of particles in fof6d calculation'
             
-            '''
-            
-            if ('fof6d_file' in obj._kwargs and obj._kwargs['fof6d_file'] is not None):
+        elif ('fof6d_file' in obj._kwargs and obj._kwargs['fof6d_file'] is not None):
             # use galaxy info from fof6d hdf5 file
             fof6d_file = obj._kwargs['fof6d_file']
+            LL = get_mean_interparticle_separation(obj) * get_b(obj, group_type)  # get MIS and omega_baryon
             import os
             if os.path.isfile(fof6d_file):
-                mylog.info('Galaxy membership will be read from fof6d file %s'%fof6d_file)
+                mylog.info('Galaxy IDs from fof6d file %s'%fof6d_file)
             else:
-                mylog.info('%s not found!' % fof6d_file)
+                mylog.info('fof6d file %s not found!' % fof6d_file)
             hf = h5py.File(fof6d_file,'r')
             npfof6d = hf['nparts']
             assert (obj.simulation.ngas==npfof6d[0])&(obj.simulation.nstar==npfof6d[1])&(obj.simulation.nbh==npfof6d[2]),'Assertion failed: Wrong number of particles in fof6d file: %s'%npfof6d
             gas_indexes = hf['gas_index']
             star_indexes = hf['star_index']
             bh_indexes = hf['bh_index']
-            mylog.info('Using galaxy IDs from fof6d file %s' % fof6d_file)
             fof_tags = np.concatenate((gas_indexes,star_indexes,bh_indexes))
-            '''
+
         else: 
             # here we want to perform 3D FOF on high density gas + stars
             mylog.info('Groups based on YT 3DFOF')
@@ -614,6 +611,8 @@ def fubar(obj, group_type, **kwargs):
     if group_type == 'halo':
         obj.halos  = group_list
         obj.nhalos = len(obj.halos)
+        #for ig in range(obj.nhalos):
+        #    if ig < 5: print('%d: dm %g gas %g star %g bh %g [%g %g %g] r200 %g vc %g sig %g %g %g'%(ig,np.log10(obj.halos[ig].masses['dm']),np.log10(obj.halos[ig].masses['gas']),np.log10(obj.halos[ig].masses['stellar']),np.log10(obj.halos[ig].masses['bh']),obj.halos[ig].pos[0],obj.halos[ig].pos[1],obj.halos[ig].pos[2],obj.halos[ig].radii['r500c'],obj.halos[ig].virial_quantities['circular_velocity'],obj.halos[ig].velocity_dispersions['gas'],obj.halos[ig].velocity_dispersions['stellar'],obj.halos[ig].velocity_dispersions['dm']))
     elif group_type == 'galaxy':
         obj.galaxies  = group_list
         obj.ngalaxies = len(obj.galaxies)

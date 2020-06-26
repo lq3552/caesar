@@ -1,4 +1,7 @@
 import numpy as np
+from yt.funcs import mylog
+
+MY_DTYPE = np.float32
 
 # Field name aliases
 particle_data_aliases = {
@@ -17,7 +20,9 @@ particle_data_aliases = {
     'pid':'particle_index',
     'fh2':'FractionH2',
     'metallicity':'metallicity',
-    'age':'StellarFormationTime',
+    'met_tng':'GFM_Metallicity',  # for Illustris/TNG
+    'aform':'StellarFormationTime',
+    'aform_tng':'GFM_StellarFormationTime',  # for Illustris/TNG
     'bhmdot':'BH_Mdot',
     'bhmass':'BH_Mass',
     'haloid':'HaloID',
@@ -40,18 +45,19 @@ ptype_ints = dict(
     dust=3,
     star=4,
     dm=1,
+    dm2=2,
     bh=5
 )
 
 # Master dict which dictates supported dataset types. Within each dict
-# the keys 'gas','star','dm','bh','dust' should point to the corresponding
+# the keys 'gas','star','dm','dm2','bh','dust' should point to the corresponding
 # yt field name.
 ptype_aliases = dict(
     GadgetDataset     = {'gas':'Gas','star':'Stars','dm':'Halo'},
     GadgetHDF5Dataset = {'gas':'PartType0','star':'PartType4','dm':'PartType1','bh':'PartType5'},
     EagleDataset      = {'gas':'PartType0','star':'PartType4','dm':'PartType1','bh':'PartType5'},
     OWLSDataset       = {'gas':'PartType0','star':'PartType4','dm':'PartType1','bh':'PartType5'},
-    GizmoDataset      = {'gas':'PartType0','star':'PartType4','dm':'PartType1','bh':'PartType5','dust':'PartType3'}, 
+    GizmoDataset      = {'gas':'PartType0','star':'PartType4','dm':'PartType1','dm2':'PartType2', 'bh':'PartType5','dust':'PartType3'}, 
 	# comment by Qi: maybe add a [Simba's offspring]-Dataset
     TipsyDataset      = {'gas':'Gas','star':'Stars','dm':'DarkMatter'},
     ARTDataset        = {'gas':'gas','star':'stars','dm':'darkmatter'},
@@ -216,8 +222,7 @@ class DatasetType(object):
         if not self.has_ptype(requested_ptype):
             raise NotImplementedError('ptype %s not found!' % requested_ptype)
         if not self.has_property(requested_ptype, requested_prop):
-            if requested_prop == 'haloid': raise NotImplementedError('prop %s not found for %s! set fof_from_snap=0' % (requested_prop, requested_ptype))
-            else: raise NotImplementedError('prop %s not found for %s!' % (requested_prop, requested_ptype))
+            raise NotImplementedError('property %s not found for %s!' % (requested_prop, requested_ptype))
 
         ptype = self.get_ptype_name(requested_ptype)
         prop  = self.get_property_name(requested_ptype, requested_prop)
@@ -232,13 +237,49 @@ class DatasetType(object):
             (requested_prop == 'pos' or requested_prop == 'vel')):
             data = self._get_gas_grid_posvel(requested_prop)
         else:
-            data = self.dd[ptype, prop]
-            
-        if not isinstance(self.indexes, str):
-            data = data[self.indexes]
-            self.indexes = 'all'
+            if self.ds_type == 'GizmoDataset':  # assumes this has Simba units, which is fairly standard
+                data = self._get_simba_property(requested_ptype,requested_prop)
+            else:
+                data = self.dd[ptype, prop].astype(MY_DTYPE)
+
+        #if not isinstance(self.indexes, str):
+        #    data = data[self.indexes]
+        #    self.indexes = 'all'
         return data
 
+    def _get_simba_property(self,ptype,prop):
+        from readgadget import readsnap
+        snapfile = ('%s/%s'%(self.ds.fullpath,self.ds.basename))
+        # set up units coming out of pygr
+        prop_unit = {'mass':'Msun', 'pos':'kpccm', 'vel':'km/s', 'pot':'Msun * kpccm**2 / s**2', 'rho':'g / cm**3', 'sfr':'Msun / yr', 'u':'K', 'Dust_Masses':'Msun', 'bhmass':'Msun', 'bhmdot':'Msun / yr', 'hsml':'kpccm'}
+
+        # damn you little h!
+        if prop is 'mass' or prop is 'pos':
+            hfact = 1./self.ds.hubble_constant
+        elif prop is 'rho':
+            hfact = self.ds.hubble_constant**2
+        else:
+            hfact = 1.
+
+        # deal with differences in pygr vs. yt/caesar naming
+        if ptype is 'bh': ptype = 'bndry'
+        if prop is 'temperature': prop = 'u'
+        if prop is 'haloid' or prop is 'dustmass' or prop is 'aform' or prop is 'bhmass' or prop is 'bhmdot': prop = self.get_property_name(ptype, prop)
+
+        # read in the data
+        data = readsnap(snapfile, prop, ptype, units=1, suppress=1) * hfact
+
+        # set to doubles
+        if prop == 'HaloID' or prop == 'particle_index':  # this fixes a bug in our Gizmo, that HaloID is output as a float!
+            data = data.astype(np.int64)
+        else:
+            data = data.astype(np.float32)
+
+        if prop in prop_unit.keys():
+            data = self.ds.arr(data, prop_unit[prop])
+        else:
+            data = self.ds.arr(data, '')
+        return data
 
     def _get_gas_grid_posvel(self,request):
         """Return a typical Nx3 array for gas grid positions."""
@@ -349,7 +390,7 @@ def get_high_density_gas_indexes(obj):
     indexes = np.where(rho >= nH_thresh)[0]
     return indexes
 
-def get_particles_for_FOF(obj, ptypes, find_type=None):
+def get_particles_for_FOF(obj, ptypes, select='all', my_dtype=MY_DTYPE):
     """This function concats all of the valid particle/field types
     into pos/vel/mass/ptype/index arrays for use throughout the 
     analysis.
@@ -360,8 +401,8 @@ def get_particles_for_FOF(obj, ptypes, find_type=None):
         Main caesar object.
     ptypes : list
         List containing which ptypes to concat.
-    find_type : str, optional
-        Depreciated.
+    select : a list of length len(ptypes) containing numpy arrays, where
+        only particles with array values>=0 will be selected
 
     Returns
     -------
@@ -369,41 +410,96 @@ def get_particles_for_FOF(obj, ptypes, find_type=None):
         Dictionary containing the keys 'pos','vel','mass','ptype','indexes'.
 
     """    
-    pos  = np.empty((0,3))
-    vel  = np.empty((0,3))
-    mass = np.empty(0)
-    pot = np.empty(0)
-    if 'fof_from_snap' in obj._kwargs and obj._kwargs['fof_from_snap']==1:
-        haloid  = np.empty(0, dtype=np.int32)
-
-    ptype   = np.empty(0,dtype=np.int32)
-    indexes = np.empty(0,dtype=np.int32)
-    
-    for p in ptypes:
+    # check if potential exists in snapshot for all particle types
+    obj.load_pot = True
+    for ip,p in enumerate(ptypes):
         if not has_ptype(obj, p):
             continue
-        
-        data = get_property(obj, 'pos', p).to(obj.units['length'])
+        if not has_property(obj, p, 'pot'):
+            obj.load_pot = False
+    #if not obj.load_pot:
+    #    mylog.warning('Potential not found in snapshot!')
+
+    pos  = np.empty((0,3),dtype=MY_DTYPE)
+    vel  = np.empty((0,3),dtype=MY_DTYPE)
+    mass = np.empty(0,dtype=MY_DTYPE)
+    pot = np.empty(0,dtype=MY_DTYPE)
+    if obj.load_haloid:
+        haloid  = np.empty(0, dtype=np.int64)
+
+    ptype   = np.empty(0,dtype=np.int32)
+    indexes = np.empty(0,dtype=np.int64)
+
+    for ip,p in enumerate(ptypes):
+        if not has_ptype(obj, p):
+            continue
+      
+        count = len(get_property(obj, 'mass', p))
+        if select is 'all': 
+            flag = [True]*count
+        else:
+            flag = (select[ip]>=0)
+
+        data = get_property(obj, 'pos', p).to(obj.units['length'])[flag]
         pos  = np.append(pos, data.d, axis=0)
         
-        data = get_property(obj, 'vel', p).to(obj.units['velocity'])
+        data = get_property(obj, 'vel', p).to(obj.units['velocity'])[flag]
         vel  = np.append(vel, data.d, axis=0)
         
-        data = get_property(obj, 'mass', p).to(obj.units['mass'])
+        data = get_property(obj, 'mass', p).to(obj.units['mass'])[flag]
         mass = np.append(mass, data.d, axis=0)
 
-        data = get_property(obj, 'pot', p)
-        pot = np.append(pot, data.d, axis=0)
+        if obj.load_pot:
+            data = get_property(obj, 'pot', p)[flag]
+            pot = np.append(pot, data.d, axis=0)
+        else:
+            pot = np.append(pot, np.zeros(count,dtype=MY_DTYPE), axis=0)
 
-        if 'fof_from_snap' in obj._kwargs and obj._kwargs['fof_from_snap']==1:
-            data = get_property(obj, 'haloid', p)
-            haloid = np.append(haloid, data.d.astype(np.int32))
+        if obj.load_haloid:
+            data = get_property(obj, 'haloid', p)[flag]
+            haloid = np.append(haloid, data.d.astype(np.int64), axis=0)
 
         nparts = len(data)
-        
-        ptype   = np.append(ptype,   np.full(nparts, ptype_ints[p], dtype=np.int32), axis=0)
-        indexes = np.append(indexes, np.arange(0, nparts, dtype=np.int32))
 
-    if 'fof_from_snap' in obj._kwargs and obj._kwargs['fof_from_snap']==1:
+        ptype   = np.append(ptype,   np.full(nparts, ptype_ints[p], dtype=np.int32), axis=0)
+        indexes = np.append(indexes, np.arange(0, count, dtype=np.int64)[flag])
+        #indexes = np.append(indexes, np.arange(0, nparts, dtype=np.int64))
+
+    if obj.load_haloid:
         return dict(pos=pos,vel=vel,pot=pot,mass=mass,haloid=haloid,ptype=ptype,indexes=indexes)
     else: return dict(pos=pos,vel=vel,pot=pot,mass=mass,ptype=ptype,indexes=indexes)
+
+def get_haloid(obj, ptypes, offset=-1):
+    """This function returns a list of HaloID numpy arrays from the snapshot, 
+    corresponding to the HaloID for the particle types in ptypes.
+    The list of arrays will be of the length of ptypes.
+
+    The Gadget/Gizmo convention is that the snapshot has HaloID=0 for particles not in a halo,
+    whereas yt/caesar use -1 for this.  So we add offset=-1 to each haloid, but this can be changed.
+
+    Parameters
+    ----------
+    obj : :class:`main.CAESAR`
+        Main caesar object.
+    ptypes : list
+        List containing which ptypes to concat.
+    select : str, optional
+
+    Returns
+    -------
+    list of array of haloids for each particle type in ptypes
+
+    """    
+    haloid = []
+
+    obj.npartsnap = 0  # number of particles in snapshot
+    for p in ptypes:
+        if has_ptype(obj, p): 
+            data = (get_property(obj, 'haloid', p).d.astype(np.int64) + offset)
+            obj.npartsnap += len(data)
+        else: 
+            data = []
+        haloid.append(data)
+
+    return np.asarray(haloid)
+
